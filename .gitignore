@@ -1,11 +1,36 @@
-__pycache__/
-*.py[cod]
+# Ambientes virtuais
 .venv/
 venv/
-.env
-*.joblib
-*.pkl
-*_pb2.py
-*_pb2_grpc.py
+ENV/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 .pytest_cache/
+.coverage
+htmlcov/
+
+# Variaveis de ambiente e segredos (LGPD / Seguranca)
+.env
+.env.local
+*.pem
+*.key
+
+# Modelos treinados locais e caches
+*.joblib
+data/
+qdrant_storage/
+redis_data/
+
+# Logs
+*.log
+logs/
+
+# IDE e Sistema Operacional
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
