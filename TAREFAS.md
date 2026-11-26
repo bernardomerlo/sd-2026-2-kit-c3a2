@@ -7,7 +7,7 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [ ] **1. Autenticacao JWT no gateway** - `gateway/app.py`
       Rota de login que emite o token e protecao das demais rotas (401 sem token). (Aula 16)
 
-- [ ] **2. Rate limit no gateway** - `gateway/app.py`
+- [x] **2. Rate limit no gateway** - `gateway/app.py`
       Limitar requisicoes por cliente por minuto. (Aula 8)
 
 - [ ] **3. Dockerfile de cada servico**
@@ -19,10 +19,10 @@ Este e o projeto integrador. Reaproveite o que voce fez em C1.A2 e C2.A2.
 - [ ] **5. Deploy em nuvem (free tier)**
       Publicar e informar a URL publica no README. (Aula 13)
 
-- [ ] **6. Resiliencia**
+- [x] **6. Resiliencia**
       Tempo-limite, retentativa com espera progressiva e circuit breaker. (Aula 11)
 
-- [ ] **7. Observabilidade**
+- [x] **7. Observabilidade**
       Rastreamento distribuido cobrindo gateway -> fila -> worker. (Aula 15)
 
 - [ ] **8. HTTPS** no servico publicado. (Aula 16)

@@ -46,3 +46,20 @@ def registrar_log_acesso(
         registro["job_id"] = job_id
 
     logger.info(json.dumps(registro, ensure_ascii=False))
+
+
+# Campos que podem aparecer em eventos internos (lista branca: nada de payload/token/IP)
+_CAMPOS_EVENTO = {"trace_id", "job_id", "tentativa", "espera_ms", "motivo", "servico", "estado"}
+
+
+def registrar_evento(evento: str, **campos):
+    """Evento operacional (retry, circuito aberto...) no mesmo formato JSON dos acessos."""
+    registro = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "gateway",
+        "event": evento,
+    }
+    for chave, valor in campos.items():
+        if chave in _CAMPOS_EVENTO and valor is not None:
+            registro[chave] = valor
+    logger.info(json.dumps(registro, ensure_ascii=False))

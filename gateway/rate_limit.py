@@ -1,102 +1,89 @@
 """
-Rate limit do API Gateway: limita requisicoes por cliente por minuto (Aula 8).
+Rate limit do gateway (Aula 8): no maximo RATE_LIMIT_PER_MINUTE requisicoes por cliente
+por minuto nas rotas /v1/*.
 
-Algoritmo: janela fixa de 60 segundos.
-  * Cada cliente tem um contador por minuto. Passou de RATE_LIMIT_PER_MINUTE -> 429 Too Many Requests.
-  * Com Redis: o contador fica no Redis (INCR + EXPIRE), entao vale para TODAS as replicas do gateway.
-  * Sem Redis: contador em memoria (fallback), valido so para esta replica.
-
-Quem e o "cliente":
-  * Com token JWT valido -> o usuario do token (campo "sub").
-  * Sem token (ex.: /auth/token) -> hash do IP de origem.
-
-LGPD: o IP nunca e gravado em claro. Vira um hash SHA-256 (com o segredo do JWT como "sal"),
-fica no Redis por no maximo 60 segundos e nunca aparece nos logs.
+- Algoritmo: janela fixa de 60 s (contador por cliente e por minuto).
+- Onde fica o contador: no Redis (INCR + EXPIRE), entao o limite vale para TODAS as
+  replicas do gateway. Se o Redis cair, usa um contador em memoria (limite por replica)
+  em vez de derrubar a API.
+- Quem e o "cliente": o `sub` do JWT. A chave guardada e um hash SHA-256 truncado,
+  nunca o identificador puro (LGPD: minimizacao), e expira sozinha em ~2 minutos.
 """
+from __future__ import annotations
+
 import hashlib
+import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
-import jwt
-from fastapi import Request
-from fastapi.responses import JSONResponse
 
-from gateway.config import JWT_ALGORITHM, JWT_SECRET, RATE_LIMIT_PER_MINUTE
-
-JANELA_SEGUNDOS = 60
-# Rotas protegidas pelo limite (health e docs ficam livres para monitoramento)
-PREFIXOS_LIMITADOS = ("/v1/", "/auth/token")
-
-_contadores_memoria: Dict[str, Tuple[int, int]] = {}
+@dataclass
+class ResultadoLimite:
+    permitido: bool
+    limite: int
+    restantes: int
+    reset_em: int  # segundos ate a janela virar
 
 
-def _identificar_cliente(request: Request) -> str:
-    """Retorna um identificador do cliente sem expor dados pessoais."""
-    autorizacao = request.headers.get("Authorization", "")
-    if autorizacao.lower().startswith("bearer "):
+def chave_cliente(identificador: str) -> str:
+    return hashlib.sha256(identificador.encode("utf-8")).hexdigest()[:16]
+
+
+class LimitadorTaxa:
+    def __init__(
+        self,
+        limite_por_janela: int,
+        janela_segundos: int = 60,
+        obter_redis: Callable[[], object] = lambda: None,
+        relogio: Callable[[], float] = time.time,
+        prefixo: str = "ratelimit",
+    ):
+        self.limite = limite_por_janela
+        self.janela = janela_segundos
+        self._obter_redis = obter_redis
+        self._relogio = relogio
+        self._prefixo = prefixo
+        self._memoria: Dict[Tuple[str, int], int] = {}
+        self._lock = threading.Lock()
+
+    def _contar_redis(self, r, chave: str) -> Optional[int]:
         try:
-            payload = jwt.decode(autorizacao[7:], JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            if payload.get("sub"):
-                return f"user:{payload['sub']}"
-        except jwt.InvalidTokenError:
-            pass  # token invalido: cai no IP (a rota vai responder 401 depois)
-
-    # Atras do proxy do Railway/Caddy, o IP real vem no X-Forwarded-For
-    encaminhado = request.headers.get("X-Forwarded-For", "")
-    ip = encaminhado.split(",")[0].strip() if encaminhado else (request.client.host if request.client else "desconhecido")
-    return "ip:" + hashlib.sha256(f"{JWT_SECRET}:{ip}".encode()).hexdigest()[:32]
-
-
-def _contar(chave: str, janela: int, obter_redis: Callable) -> int:
-    """Incrementa o contador do cliente na janela atual e devolve o total."""
-    r = obter_redis()
-    if r is not None:
-        try:
-            chave_redis = f"ratelimit:{chave}:{janela}"
-            total = r.incr(chave_redis)
-            if total == 1:
-                r.expire(chave_redis, JANELA_SEGUNDOS)
-            return int(total)
+            pipe = r.pipeline()
+            pipe.incr(chave)
+            pipe.expire(chave, self.janela * 2)
+            contagem, _ = pipe.execute()
+            return int(contagem)
         except Exception:
-            pass  # Redis falhou no meio: usa a memoria
+            return None  # cai para memoria
 
-    janela_salva, total = _contadores_memoria.get(chave, (janela, 0))
-    if janela_salva != janela:
-        total = 0
-    total += 1
-    _contadores_memoria[chave] = (janela, total)
-    if len(_contadores_memoria) > 10_000:  # evita crescer sem limite
-        _contadores_memoria.clear()
-    return total
+    def _contar_memoria(self, cliente: str, janela_atual: int) -> int:
+        with self._lock:
+            # limpa janelas antigas para a memoria nao crescer
+            for k in [k for k in self._memoria if k[1] < janela_atual]:
+                del self._memoria[k]
+            k = (cliente, janela_atual)
+            self._memoria[k] = self._memoria.get(k, 0) + 1
+            return self._memoria[k]
 
+    def verificar(self, identificador: str) -> ResultadoLimite:
+        agora = self._relogio()
+        janela_atual = int(agora // self.janela)
+        reset_em = max(1, int(self.janela - (agora % self.janela)))
+        if self.limite <= 0:  # 0 desliga o rate limit
+            return ResultadoLimite(True, 0, 0, reset_em)
 
-def aplicar_rate_limit(request: Request, obter_redis: Callable) -> Tuple[Optional[JSONResponse], Dict[str, str]]:
-    """
-    Retorna (resposta_429_ou_None, cabecalhos_informativos).
-    Se a resposta nao for None, a requisicao deve ser bloqueada.
-    """
-    if RATE_LIMIT_PER_MINUTE <= 0 or not request.url.path.startswith(PREFIXOS_LIMITADOS):
-        return None, {}
+        cliente = chave_cliente(identificador)
+        contagem = None
+        r = self._obter_redis()
+        if r is not None:
+            contagem = self._contar_redis(r, f"{self._prefixo}:{cliente}:{janela_atual}")
+        if contagem is None:
+            contagem = self._contar_memoria(cliente, janela_atual)
 
-    agora = int(time.time())
-    janela = agora // JANELA_SEGUNDOS
-    total = _contar(_identificar_cliente(request), janela, obter_redis)
-
-    restante = max(RATE_LIMIT_PER_MINUTE - total, 0)
-    reset = JANELA_SEGUNDOS - (agora % JANELA_SEGUNDOS)
-    cabecalhos = {
-        "X-RateLimit-Limit": str(RATE_LIMIT_PER_MINUTE),
-        "X-RateLimit-Remaining": str(restante),
-        "X-RateLimit-Reset": str(reset),
-    }
-
-    if total > RATE_LIMIT_PER_MINUTE:
-        cabecalhos["Retry-After"] = str(reset)
-        resposta = JSONResponse(
-            status_code=429,
-            content={"detail": f"Limite de {RATE_LIMIT_PER_MINUTE} requisições por minuto excedido. Tente novamente em {reset} s."},
-            headers=cabecalhos,
+        return ResultadoLimite(
+            permitido=contagem <= self.limite,
+            limite=self.limite,
+            restantes=max(0, self.limite - contagem),
+            reset_em=reset_em,
         )
-        return resposta, cabecalhos
-
-    return None, cabecalhos

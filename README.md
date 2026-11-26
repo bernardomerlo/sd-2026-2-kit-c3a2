@@ -30,15 +30,18 @@ flowchart LR
     W -- "POST /predict<br/>(retry + backoff)" --> I
     W -- "HSET job:{id}<br/>completed / failed" --> R
     I -- "busca vetorial" --> Q[(qdrant<br/>banco vetorial)]
+    G -. traces OTLP .-> J[jaeger<br/>rastreamento]
+    W -. traces OTLP .-> J
 ```
 
 | Serviço | Pasta | Responsabilidade | Etapa |
 |---|---|---|---|
-| **gateway** | `gateway/` | Única porta de entrada: JWT, rate limit, roteamento síncrono/assíncrono, logs sem dados pessoais | 1 |
+| **gateway** | `gateway/` | Única porta de entrada: JWT, rate limit, retentativa + circuit breaker, roteamento síncrono/assíncrono, logs sem dados pessoais | 1 e 4 |
 | **inferencia** | `inferencia/` | Modelo scikit-learn (sentimento), embeddings locais, busca no Qdrant, LLM opcional | 2 |
 | **qdrant** | imagem oficial | Armazenamento vetorial dos documentos | 2 |
 | **redis** | imagem oficial | Fila de jobs (`inference.jobs`), fila de erro (`inference.dlq`) e status com TTL | 3 |
-| **worker** | `worker/` | Consome a fila, chama a inferência com retentativa e grava o resultado | 3 |
+| **worker** | `worker/` | Consome a fila, chama a inferência com retentativa e grava o resultado | 3 e 4 |
+| **jaeger** | imagem oficial | Recebe os traces (OpenTelemetry) e mostra o caminho de cada requisição | 4 |
 
 **Comunicação:**
 - **Síncrona (REST):** `POST /v1/infer` → gateway chama `inferencia/predict` e devolve na hora.
@@ -47,6 +50,7 @@ flowchart LR
 - **Descoberta de serviços:** sempre pelo **nome** (`redis`, `qdrant`, `inferencia`), nunca por IP.
 
 Contrato da fila: [`docs/etapa3-contrato.md`](docs/etapa3-contrato.md) ·
+Resiliência e observabilidade: [`docs/etapa4-resiliencia-observabilidade.md`](docs/etapa4-resiliencia-observabilidade.md) ·
 Detalhes de cada serviço: [`gateway/README.md`](gateway/README.md),
 [`inferencia/README.md`](inferencia/README.md), [`worker/README.md`](worker/README.md) ·
 Trade-offs: [`docs/tradeoffs.md`](docs/tradeoffs.md)
@@ -64,8 +68,9 @@ cp .env.example .env          # troque o JWT_SECRET antes de usar fora do seu PC
 docker compose up --build
 ```
 
-Sobem 5 containers: `redis`, `qdrant`, `inferencia`, `worker` e `gateway`.
-O gateway fica em **http://localhost:8000** (Swagger em http://localhost:8000/docs).
+Sobem 6 containers: `redis`, `qdrant`, `inferencia`, `worker`, `gateway` e `jaeger`.
+O gateway fica em **http://localhost:8000** (Swagger em http://localhost:8000/docs) e o painel de
+rastreamento do Jaeger em **http://localhost:16686** (Service `gateway` → Find Traces).
 Funciona **100% offline**: o modelo é treinado no build e o LLM roda em modo simulado sem `LLM_API_KEY`.
 
 Para parar e apagar os dados: `docker compose down -v`.
@@ -108,8 +113,11 @@ curl $URL/v1/jobs/$JOB -H "Authorization: Bearer $TOKEN"    # status: completed
 Pelo navegador: abra `/docs`, execute `POST /auth/token`, clique em **Authorize**, cole o token e
 teste as rotas.
 
-**Teste de falha:** `docker compose stop inferencia` e crie um job → o worker tenta 3 vezes com espera
-progressiva e o job termina como `failed` (`inference_unavailable`), indo para a fila `inference.dlq`.
+**Teste de falha:** `docker compose stop inferencia` e:
+- crie um job → o worker tenta 3 vezes com espera progressiva e o job termina como `failed`
+  (`inference_unavailable`), indo para a fila `inference.dlq`;
+- chame `/v1/infer` várias vezes → depois de 5 falhas seguidas o **circuit breaker abre** e o gateway
+  responde `503` na hora, sem esperar o tempo-limite (estado visível em `/health`).
 
 ---
 
@@ -126,6 +134,8 @@ O arquivo `.env` **não vai para o Git**. Principais:
 | `VECTOR_DB_URL` | inferencia | Endereço do Qdrant |
 | `JOB_TTL_SECONDS` | gateway, worker | Tempo de retenção do status/resultado (3600 s) |
 | `RATE_LIMIT_PER_MINUTE` | gateway | Requisições por cliente por minuto (60; `0` desliga) |
+| `RETRY_MAX_ATTEMPTS`, `CB_FAILURE_THRESHOLD`, `CB_RECOVERY_SECONDS` | gateway | Retentativa e circuit breaker |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | gateway, worker | Para onde enviar os traces (Jaeger); vazio = não exporta |
 | `LLM_API_KEY` | inferencia | Opcional; vazio = LLM simulado, sem enviar dados para fora |
 
 ---
@@ -139,7 +149,8 @@ O arquivo `.env` **não vai para o Git**. Principais:
 | Jobs com falha | Redis (`inference.dlq`) | Diagnóstico de falhas | Só metadados (`job_id`, motivo, tentativas); **sem o texto** |
 | Documentos indexados | Qdrant | Contexto para a busca vetorial | Até serem removidos (`docker compose down -v`); a base de exemplo é fictícia |
 | Nome de usuário do token | Dentro do JWT (no cliente) | Autenticação | Até o token expirar (60 min) |
-| Contador do rate limit | Redis (`ratelimit:*`) | Limitar abuso | **60 segundos**; o IP é guardado só como hash SHA-256, nunca em claro |
+| Contador do rate limit | Redis (`ratelimit:*`) | Limitar abuso | **~2 minutos**; o usuário é guardado só como hash SHA-256, nunca em claro |
+| Traces (rastreamento) | Memória do Jaeger | Diagnóstico de latência e falhas | Até o Jaeger reiniciar (sem disco); só método, rota, status, `job_id` e nome da fila, **sem texto, token ou IP** |
 | Logs | Saída dos containers | Operação e depuração | Apenas `timestamp`, `service`, rota, status, latência, `trace_id`, `job_id` |
 
 **O que nunca é registrado nos logs:** texto do usuário, conteúdo de documentos, endereço IP
@@ -152,17 +163,17 @@ contexto são enviados ao provedor do LLM; no deploy atual ela **não** está co
 
 ---
 
-## ✅ Status das tarefas (TAREFAS.md)
+## ✅ Núcleo obrigatório (edital)
 
-| # | Tarefa | Status |
+| Requisito | Como foi atendido | Status |
 |---|---|---|
-| 1 | Autenticação JWT no gateway | ✅ |
-| 2 | Rate limit no gateway | ✅ 60 req/min por cliente (`429` + `Retry-After`) |
-| 3 | Dockerfile de cada serviço (usuário não-root) | ✅ |
-| 4 | docker-compose completo, um comando | ✅ |
-| 5 | Deploy em nuvem com URL pública | ✅ Railway |
-| 6 | Resiliência | 🟡 tempo-limite + retentativa com backoff no worker; circuit breaker em andamento (Etapa 4) |
-| 7 | Observabilidade (tracing gateway → fila → worker) | 🟡 `trace_id` propagado nos logs; OpenTelemetry/Jaeger em andamento (Etapa 4) |
-| 8 | HTTPS no serviço publicado | ✅ |
-| 9 | Seção de conformidade (LGPD) | ✅ |
-| 10 | Relatório de trade-offs | ✅ [`docs/tradeoffs.md`](docs/tradeoffs.md) |
+| Microsserviços: gateway + inferência + worker + vetorial | `gateway`, `inferencia`, `worker`, `qdrant` (+ `redis` como fila) | ✅ |
+| Um Dockerfile por serviço | `gateway/Dockerfile`, `inferencia/Dockerfile`, `worker/Dockerfile` (usuário não-root) | ✅ |
+| docker-compose: sobe com UM comando | `docker compose up --build` | ✅ |
+| Deploy em nuvem (free tier) com URL pública | Railway: https://sd-2026-2-kit-c3a2-production.up.railway.app/health | ✅ |
+| Resiliência: tempo-limite, retentativa com espera progressiva, circuit breaker | Tempo-limite e retentativa com backoff + jitter no gateway e no worker; circuit breaker no gateway → inferência (Etapa 4) | ✅ |
+| Observabilidade: rastreamento gateway → fila → worker | `trace_id` gerado no gateway, levado na mensagem da fila e registrado nos logs do worker; OpenTelemetry + Jaeger: um único trace cobre gateway → fila → worker → inferência (Etapa 4) | ✅ |
+| Segurança: JWT no gateway + HTTPS | `POST /auth/token`, rotas `/v1/*` exigem token (`401` sem ele); HTTPS do Railway (ou Caddy na VM) | ✅ |
+| Conformidade LGPD no README | Seção [Conformidade (LGPD)](#-conformidade-lgpd) | ✅ |
+| Relatório de trade-offs (CAP, custo, latência) | [`docs/tradeoffs.md`](docs/tradeoffs.md) | ✅ |
+| Extra: rate limit no gateway | 60 req/min por cliente nas rotas `/v1/*`, `429` + `Retry-After` | ✅ |

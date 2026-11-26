@@ -17,4 +17,16 @@ REDIS_URL = os.getenv("REDIS_URL", os.getenv("BROKER_URL", "redis://localhost:63
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "10.0"))
 JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", "3600"))
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inference.jobs")  # contrato da Etapa 3 (docs/etapa3-contrato.md)
-RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))  # 0 desliga o limite
+
+# ---- Etapa 4: resiliencia (timeout + retry com backoff + circuit breaker) ----
+RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BASE_DELAY_SECONDS = float(os.getenv("RETRY_BASE_DELAY_SECONDS", "0.2"))
+RETRY_MAX_DELAY_SECONDS = float(os.getenv("RETRY_MAX_DELAY_SECONDS", "2.0"))
+CB_FAILURE_THRESHOLD = int(os.getenv("CB_FAILURE_THRESHOLD", "5"))
+CB_RECOVERY_SECONDS = float(os.getenv("CB_RECOVERY_SECONDS", "30"))
+
+# ---- Etapa 4: rate limit por cliente (0 desliga) ----
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+
+# ---- Etapa 4: observabilidade (OpenTelemetry). Endpoint vazio = nao exporta ----
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "gateway")
