@@ -1,12 +1,14 @@
-# Usado SO no servidor da nuvem, junto com o arquivo principal:
+# Usado SO no servidor da nuvem (VM), junto com o arquivo principal:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 # O Caddy recebe na porta 443 e gera o certificado HTTPS (Let's Encrypt) sozinho.
+# (No Railway este arquivo NAO e usado: o proprio Railway faz o HTTPS.)
 services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    networks: [plataforma]
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "80:80"
       - "443:443"
@@ -17,9 +19,6 @@ services:
 
   gateway:
     ports: !reset []      # em producao, o gateway so e acessado pelo Caddy
-
-  jaeger:
-    ports: !reset []      # painel do Jaeger nao fica exposto na internet
 
 volumes:
   caddy_data:
