@@ -40,7 +40,8 @@ vezes; como a inferência não altera dados, reprocessar é seguro (idempotente)
 |---|---|---|
 | **Síncrono** (`/v1/infer`) | Resposta na mesma requisição | Mais simples para o cliente, mas ele espera; se a inferência estiver lenta ou fora, o cliente recebe o erro (tempo-limite de 10 s no gateway) |
 | **Assíncrono** (`/v1/jobs`) | `202` imediato; resultado consultado depois | Aceitar o pedido é muito rápido, mas o resultado leva mais tempo total (fila + processamento + consulta) e o cliente precisa consultar o status. Medido no deploy: cerca de **0,7 s** entre criar e concluir o job |
-| **Retentativa com espera progressiva** (worker) | Até 3 tentativas: ~0,5 s, ~1 s (+ variação aleatória) | Aumenta a chance de sucesso em falhas passageiras, mas um job com falha demora alguns segundos a mais para virar `failed` |
+| **Retentativa com espera progressiva** (gateway e worker) | Até 3 tentativas: ~0,5 s, ~1 s (+ variação aleatória) | Aumenta a chance de sucesso em falhas passageiras, mas um job com falha demora alguns segundos a mais para virar `failed` |
+| **Circuit breaker** (gateway → inferência) | Após 5 falhas seguidas, responde `503` na hora por 30 s | O cliente recebe erro rápido em vez de esperar o tempo-limite, e a inferência ganha tempo para se recuperar; em troca, durante esses 30 s nenhuma chamada é tentada, mesmo que o serviço já tenha voltado |
 | **Tempo-limite curto** (5 s no worker, 1 s no `/health`) | Falha rápido em vez de travar | Uma inferência legitimamente lenta pode ser cortada |
 | **Modelo leve e local** | Inferência em milissegundos, sem chamada externa | Qualidade menor (ver Custo) |
 | **Rede privada do Railway** | Chamadas internas sem passar pela internet | Todos os serviços precisam estar na mesma região (US East); para usuários no Brasil, cada requisição pública atravessa até os EUA |
