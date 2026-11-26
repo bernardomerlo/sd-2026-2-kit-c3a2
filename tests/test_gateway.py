@@ -100,3 +100,26 @@ def test_consultar_job_inexistente_retorna_404():
     headers = {"Authorization": f"Bearer {token}"}
     resp = client.get("/v1/jobs/00000000-0000-0000-0000-000000000000", headers=headers)
     assert resp.status_code == 404
+
+
+def test_rate_limit_retorna_429():
+    """Passou do limite por minuto -> 429 com Retry-After (TAREFAS.md item 2)."""
+    from gateway import rate_limit
+
+    limite_original = rate_limit.RATE_LIMIT_PER_MINUTE
+    rate_limit.RATE_LIMIT_PER_MINUTE = 3
+    rate_limit._contadores_memoria.clear()
+    try:
+        token = client.post("/auth/token", json={"username": "teste_rate_limit"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        codigos = [client.get("/v1/jobs/inexistente", headers=headers).status_code for _ in range(4)]
+        assert codigos[:3] == [404, 404, 404]
+        assert codigos[3] == 429
+        resposta = client.get("/v1/jobs/inexistente", headers=headers)
+        assert resposta.status_code == 429
+        assert "Retry-After" in resposta.headers
+        # /health nunca e limitado (monitoramento)
+        assert client.get("/health").status_code == 200
+    finally:
+        rate_limit.RATE_LIMIT_PER_MINUTE = limite_original
+        rate_limit._contadores_memoria.clear()
