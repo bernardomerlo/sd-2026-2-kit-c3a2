@@ -13,6 +13,15 @@ services:
       timeout: 3s
       retries: 5
 
+  # ---- Etapa 4: Jaeger (recebe os traces OTLP e mostra a UI) ---------------------
+  # UI: http://localhost:16686  -> Service "gateway" -> Find Traces
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - MEMORY_MAX_TRACES=5000      # guarda poucos traces em memoria (sem disco, some ao reiniciar)
+    ports: ["127.0.0.1:16686:16686"]   # so loopback: nao expor a UI na internet
+
   # ---- Etapa 2: banco vetorial ---------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.12.4
@@ -51,6 +60,8 @@ services:
       - BROKER_URL=redis://redis:6379/0
       - INFERENCE_URL=http://inferencia:8001
       - JOB_TTL_SECONDS=${JOB_TTL_SECONDS:-3600}
+      - OTEL_SERVICE_NAME=worker
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT-http://jaeger:4318}
     stop_grace_period: 30s
     depends_on:
       redis: {condition: service_healthy}
@@ -67,6 +78,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - INFERENCE_URL=http://inferencia:8001
       - JOB_TTL_SECONDS=${JOB_TTL_SECONDS:-3600}
+      - OTEL_SERVICE_NAME=gateway
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT-http://jaeger:4318}
     depends_on:
       redis: {condition: service_healthy}
       inferencia: {condition: service_healthy}

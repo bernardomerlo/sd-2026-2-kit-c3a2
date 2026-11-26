@@ -28,6 +28,15 @@ Esta branch e commit contêm a implementação completa da **Etapa 1**, estabele
 
 ---
 
+## 🔁 Etapa 4 — Resiliência, Rate Limit e Observabilidade (Integrante 4)
+
+- **Resiliência** (gateway → inferência): tempo-limite, retentativa com backoff exponencial + jitter (só em timeout/rede/5xx) e **circuit breaker** (503 imediato quando aberto; estado em `GET /health`).
+- **Rate limit**: `RATE_LIMIT_PER_MINUTE` por cliente (JWT `sub`) nas rotas `/v1/*` → `429` + `Retry-After`. Contador no Redis.
+- **Rastreamento distribuído** (OpenTelemetry → Jaeger): um único trace cobre **gateway → fila → worker → inferência** (o `traceparent` viaja dentro da mensagem da fila). UI: http://localhost:16686
+- Detalhes, roteiro de teste e trade-offs: [`docs/etapa4-resiliencia-observabilidade.md`](docs/etapa4-resiliencia-observabilidade.md)
+
+---
+
 ## 🧪 Como Testar
 
 ```bash

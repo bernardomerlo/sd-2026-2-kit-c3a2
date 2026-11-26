@@ -11,13 +11,42 @@ from datetime import datetime, timezone
 import httpx
 import redis
 
-try:  # OpenTelemetry e opcional ate a Etapa 4 (no-op se SDK nao estiver configurado)
+try:  # OpenTelemetry (Etapa 4). Sem SDK vira no-op e o worker segue funcionando.
     from opentelemetry import propagate, trace
-    from opentelemetry.trace import SpanKind
-    _tracer = trace.get_tracer("worker")
+    from opentelemetry.trace import SpanKind, Status, StatusCode
 except Exception:  # pragma: no cover
     propagate = None
-    _tracer = None
+    trace = None
+    SpanKind = Status = StatusCode = None
+
+
+def configurar_tracing():
+    """Etapa 4: mesmo esquema do gateway (OTEL_EXPORTER_OTLP_ENDPOINT -> Jaeger)."""
+    if trace is None:
+        return None
+    try:
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+
+        provider = TracerProvider(resource=Resource.create(
+            {"service.name": os.getenv("OTEL_SERVICE_NAME", "worker")}))
+        exportador = os.getenv("OTEL_TRACES_EXPORTER", "otlp").lower()
+        endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
+        if exportador == "console":
+            provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        elif exportador == "otlp" and endpoint:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            provider.add_span_processor(BatchSpanProcessor(
+                OTLPSpanExporter(endpoint=endpoint.rstrip("/") + "/v1/traces")))
+        trace.set_tracer_provider(provider)
+        return provider
+    except Exception:  # SDK/exportador ausente: segue so com a API (no-op)
+        return None
+
+
+_provider = configurar_tracing()
+_tracer = trace.get_tracer("worker") if trace else None
 
 BROKER_URL = os.getenv("BROKER_URL", "redis://broker:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://inference:8001").rstrip("/")
@@ -84,6 +113,23 @@ class TransientError(Exception):
 
 
 def call_inference(payload, headers):
+    span_cm = (_tracer.start_as_current_span("POST /predict", kind=SpanKind.CLIENT)
+               if _tracer else None)
+    span = span_cm.__enter__() if span_cm else None
+    try:
+        if propagate:
+            propagate.inject(headers)  # traceparent filho deste span CLIENT
+        return _call_inference(payload, headers)
+    except Exception as exc:
+        if span is not None:
+            span.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+        raise
+    finally:
+        if span_cm:
+            span_cm.__exit__(None, None, None)
+
+
+def _call_inference(payload, headers):
     """POST /predict. Retry com backoff+jitter so em 5xx/timeout (nunca 4xx).
     Na Etapa 4 pode ser trocado pelo cliente resiliente compartilhado."""
     timeout = httpx.Timeout(HTTP_TIMEOUT_SECONDS, connect=2.0)
@@ -136,11 +182,14 @@ def process(r, raw):
             trace_id = format(span.get_span_context().trace_id, "032x")
         extra = {"job_id": job_id, "trace_id": trace_id or msg.get("trace_id")}
 
+        if span is not None:
+            span.set_attribute("messaging.system", "redis")
+            span.set_attribute("messaging.source.name", QUEUE_NAME)
+            span.set_attribute("job.id", job_id)
         set_status(r, job_id, "processing")
         log.info("job iniciado", extra=extra)
-        headers = {}
-        if propagate:
-            propagate.inject(headers)  # continua o trace ate o inference
+        # X-Trace-Id: o servico de inferencia loga o MESMO trace_id (correlacao de logs)
+        headers = {"X-Trace-Id": extra["trace_id"]} if extra["trace_id"] else {}
         t0 = time.time()
         try:
             result = call_inference(payload, headers)
@@ -150,6 +199,8 @@ def process(r, raw):
             # mensagem generica: sem stack trace nem dados do usuario
             reason = "inference_unavailable" if isinstance(exc, TransientError) else "invalid_request"
             set_status(r, job_id, "failed", error=reason)
+            if span is not None:
+                span.set_status(Status(StatusCode.ERROR, reason))
             _send_to_dlq(r, job_id, reason, MAX_ATTEMPTS, extra["trace_id"])
             log.error(f"job falhou: {reason}", extra=extra)
     finally:
@@ -192,6 +243,8 @@ def main():
         except redis.RedisError:
             log.warning("erro de conexao com o broker, tentando de novo")
             time.sleep(2)
+    if _provider is not None:
+        _provider.shutdown()  # descarrega os spans pendentes antes de sair
     log.info("worker encerrado")
 
 
