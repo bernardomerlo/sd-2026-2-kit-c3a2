@@ -1,62 +1,99 @@
+# Plataforma de IA como Servico - sobe TUDO com:  docker compose up --build -d
+# Os servicos se encontram pelo NOME (redis, qdrant, inferencia...), nunca por IP.
+
 services:
+
+  # ---------- Fila de mensagens + status dos jobs (Etapa 3) ----------
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    restart: unless-stopped
+    networks: [plataforma]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      retries: 5
-
-  # ---- Etapa 2: banco vetorial -------------------------------------------------
-  qdrant:
-    image: qdrant/qdrant:v1.12.4
-    # Loopback apenas (dashboard em http://localhost:6333/dashboard); nao expor na internet.
-    ports: ["127.0.0.1:6333:6333"]
-    volumes: ["qdrant_data:/qdrant/storage"]
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && head -n1 <&3 | grep -q 200'"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # ---- Etapa 2: servico de inferencia (modelo sklearn + busca vetorial + LLM) ---
-  # Sobe sozinho com:  docker compose up --build qdrant inferencia
-  inferencia:
-    build: ./inferencia
-    ports: ["127.0.0.1:8001:8001"]   # so para testes locais; em producao fica na rede interna
-    environment:
-      - VECTOR_DB_URL=${VECTOR_DB_URL:-http://qdrant:6333}
-      - VECTOR_COLLECTION=${VECTOR_COLLECTION:-documentos_tecnicos}
-      - VECTOR_DB_API_KEY=${VECTOR_DB_API_KEY:-}
-      - SEED_ON_STARTUP=${SEED_ON_STARTUP:-true}
-      - VECTOR_DB_STARTUP_TIMEOUT_SECONDS=${VECTOR_DB_STARTUP_TIMEOUT_SECONDS:-120}
-      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
-      - LLM_API_KEY=${LLM_API_KEY:-}
-      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-20}
-    # "started" (e nao "healthy") de proposito: o servico reconecta sozinho se o Qdrant demorar
-    # e o healthcheck do Qdrant abaixo e so informativo. A Etapa 5 pode endurecer para service_healthy.
-    depends_on:
-      qdrant: {condition: service_started}
+  # ---------- Armazenamento vetorial (Etapa 2) ----------
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    restart: unless-stopped
+    networks: [plataforma]
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
-  worker:
-    build: ./worker
+  # ---------- Rastreamento distribuido (Etapa 4) ----------
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    networks: [plataforma]
     environment:
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      redis: {condition: service_healthy}
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # painel web do Jaeger (http://localhost:16686)
 
+  # ---------- Servico de inferencia (Etapa 2) ----------
+  # Descomente quando a pasta inferencia/ (com Dockerfile) estiver no repositorio.
+  # inferencia:
+  #   build: ./inferencia
+  #   restart: unless-stopped
+  #   networks: [plataforma]
+  #   env_file: .env
+  #   environment:
+  #     - VECTOR_DB_URL=http://qdrant:6333
+  #     - OTEL_SERVICE_NAME=inferencia
+  #   depends_on:
+  #     qdrant: {condition: service_healthy}
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 12
+
+  # ---------- Worker da fila (Etapa 3) ----------
+  # Descomente quando a pasta worker/ (com Dockerfile) estiver no repositorio.
+  # worker:
+  #   build: ./worker
+  #   restart: unless-stopped
+  #   networks: [plataforma]
+  #   env_file: .env
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379/0
+  #     - INFERENCE_URL=http://inferencia:8001
+  #     - OTEL_SERVICE_NAME=worker
+  #   depends_on:
+  #     redis: {condition: service_healthy}
+  #     inferencia: {condition: service_healthy}
+
+  # ---------- API Gateway (Etapa 1) - unica porta exposta ----------
   gateway:
     build: ./gateway
-    ports: ["8000:8000"]
+    restart: unless-stopped
+    networks: [plataforma]
+    env_file: .env
     environment:
-      - URL_INFERENCIA=http://inferencia:8001
-      - JWT_SEGREDO=${JWT_SEGREDO:-troque-este-segredo}
-    depends_on: [inferencia]
+      - REDIS_URL=redis://redis:6379/0
+      - INFERENCE_URL=http://inferencia:8001
+      - OTEL_SERVICE_NAME=gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis: {condition: service_healthy}
+      # inferencia: {condition: service_healthy}   # descomente junto com o inferencia
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
-# Observe: os servicos se referenciam pelo NOME (inferencia, redis),
-# nunca por IP fixo. Isso e descoberta de servicos. (Aula 14)
+networks:
+  plataforma:
+    driver: bridge
 
 volumes:
   qdrant_data:
