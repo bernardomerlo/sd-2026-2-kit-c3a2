@@ -17,3 +17,4 @@ REDIS_URL = os.getenv("REDIS_URL", os.getenv("BROKER_URL", "redis://localhost:63
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "10.0"))
 JOB_TTL_SECONDS = int(os.getenv("JOB_TTL_SECONDS", "3600"))
 QUEUE_NAME = os.getenv("QUEUE_NAME", "inference.jobs")  # contrato da Etapa 3 (docs/etapa3-contrato.md)
+RATE_LIMIT_PER_MINUTE = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))  # 0 desliga o limite
