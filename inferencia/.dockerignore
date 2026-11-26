@@ -1,0 +1,14 @@
+tests/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env.*
+model/
+*.joblib
+requirements-dev.txt
+pytest.ini
+Dockerfile
+.dockerignore
+README.md

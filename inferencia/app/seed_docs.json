@@ -1,0 +1,82 @@
+[
+  {
+    "id": "seed-cap",
+    "texto": "O teorema CAP afirma que, diante de uma partição de rede, um sistema distribuído precisa escolher entre consistência e disponibilidade. Sistemas AP continuam respondendo durante a partição, aceitando consistência eventual; sistemas CP preferem recusar requisições a devolver dados desatualizados.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Teorema CAP"
+    }
+  },
+  {
+    "id": "seed-circuit-breaker",
+    "texto": "O circuit breaker protege um serviço contra falhas em cascata. Depois de um número de falhas consecutivas ele abre o circuito e passa a falhar rapidamente, sem chamar o serviço problemático. Após um tempo de recuperação entra em meio-aberto para testar se o serviço voltou e, em caso de sucesso, fecha o circuito.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Circuit breaker"
+    }
+  },
+  {
+    "id": "seed-retry-backoff",
+    "texto": "A retentativa com espera progressiva (backoff exponencial) repete chamadas que falharam por erros transitórios, aumentando o intervalo entre as tentativas. Adicionar jitter aleatório evita que muitos clientes tentem ao mesmo tempo. Só se deve repetir erros 5xx ou timeouts, nunca erros 4xx do cliente.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Retentativa com backoff"
+    }
+  },
+  {
+    "id": "seed-jwt",
+    "texto": "Um JSON Web Token assinado com HS256 carrega as claims sub, iat e exp. O API Gateway valida a assinatura e a expiração em toda requisição e responde 401 Unauthorized quando o token está ausente, inválido ou expirado. O segredo de assinatura deve ficar em variável de ambiente, nunca no código.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Autenticação JWT"
+    }
+  },
+  {
+    "id": "seed-mensageria",
+    "texto": "Uma fila de mensagens desacopla quem produz a tarefa de quem a processa. O gateway publica o job e responde 202 Accepted imediatamente; um worker consome a fila, atualiza o status do job para processing e depois completed ou failed. Mensagens que falham repetidamente vão para uma dead letter queue.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Filas de mensagens"
+    }
+  },
+  {
+    "id": "seed-docker-compose",
+    "texto": "O docker compose orquestra vários containers com um único comando. Cada serviço tem seu Dockerfile, rede dedicada e variáveis de ambiente. Healthchecks com depends_on condition service_healthy impedem que um serviço suba antes de suas dependências, como o banco vetorial.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Docker Compose"
+    }
+  },
+  {
+    "id": "seed-tracing",
+    "texto": "O rastreamento distribuído com OpenTelemetry acompanha uma requisição por vários serviços usando um trace_id comum. O contexto traceparent é injetado nos cabeçalhos HTTP e na mensagem da fila, para que o worker continue o mesmo trace. O Jaeger exibe a árvore de spans do gateway até o banco vetorial.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Rastreamento distribuído"
+    }
+  },
+  {
+    "id": "seed-embeddings",
+    "texto": "Um banco vetorial como o Qdrant guarda embeddings, vetores numéricos que representam o significado de um texto. A busca por similaridade de cosseno devolve os top_k documentos mais próximos da consulta, fornecendo contexto relevante para a inferência e para a geração de respostas.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "Banco vetorial e embeddings"
+    }
+  },
+  {
+    "id": "seed-lgpd",
+    "texto": "A LGPD exige finalidade, minimização e prazo de retenção para dados pessoais. Resultados de jobs devem expirar automaticamente por TTL, os logs não podem gravar o texto do usuário, endereços IP ou tokens, e os documentos indexados devem ser descartados ao fim do ciclo de uso.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "LGPD e retenção de dados"
+    }
+  },
+  {
+    "id": "seed-gateway",
+    "texto": "O API Gateway é a porta de entrada única da plataforma. Ele autentica as requisições, aplica limites, propaga o trace_id e roteia chamadas síncronas para o serviço de inferência ou assíncronas para a fila. Os serviços internos ficam em rede privada e não são expostos diretamente à internet.",
+    "metadata": {
+      "origem": "seed",
+      "titulo": "API Gateway"
+    }
+  }
+]
