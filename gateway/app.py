@@ -32,6 +32,7 @@ from gateway.config import (
     REDIS_URL,
 )
 from gateway.logger import registrar_log_acesso
+from gateway.rate_limit import aplicar_rate_limit
 
 # Cache de jobs em memoria para alta resiliencia caso Redis nao esteja ativo localmente
 _memoria_local_jobs: Dict[str, dict] = {}
@@ -139,7 +140,11 @@ async def middleware_auditoria_e_logs(request: Request, call_next):
     )
     request.state.trace_id = trace_id
 
-    resposta: Response = await call_next(request)
+    # Rate limit por cliente/minuto: bloqueia com 429 antes de chegar na rota
+    bloqueio, cabecalhos_limite = aplicar_rate_limit(request, obter_cliente_redis)
+    resposta: Response = bloqueio if bloqueio is not None else await call_next(request)
+    for nome, valor in cabecalhos_limite.items():
+        resposta.headers[nome] = valor
     latencia_ms = (time.time() - inicio) * 1000
 
     resposta.headers["X-Trace-Id"] = trace_id
