@@ -27,6 +27,7 @@ from gateway.config import (
     HTTP_TIMEOUT_SECONDS,
     INFERENCE_URL,
     JOB_TTL_SECONDS,
+    QUEUE_NAME,
     JWT_EXPIRATION_MINUTES,
     REDIS_URL,
 )
@@ -293,9 +294,15 @@ async def criar_job(
     r = obter_cliente_redis()
     if r:
         try:
+            # Contrato Etapa 3: status em HASH job:{id} (com TTL) + mensagem com "payload" na fila
             chave_status = f"job:{job_id}"
-            r.set(chave_status, json.dumps(dados_job), ex=JOB_TTL_SECONDS)
-            r.rpush("tarefas", json.dumps({"job_id": job_id, "texto": payload.texto, "trace_id": trace_id}))
+            r.hset(chave_status, mapping={"status": "pending", "created_at": agora})
+            r.expire(chave_status, JOB_TTL_SECONDS)
+            r.rpush(QUEUE_NAME, json.dumps({
+                "job_id": job_id,
+                "payload": {"texto": payload.texto},
+                "trace_id": trace_id,
+            }))
         except Exception:
             _memoria_local_jobs[job_id] = dados_job
     else:
@@ -323,12 +330,18 @@ async def consultar_job(
     dados_brutos = None
     if r:
         try:
-            dados_brutos = r.get(f"job:{job_id}")
+            dados_brutos = r.hgetall(f"job:{job_id}")  # hash gravado pelo gateway e pelo worker
         except Exception:
             dados_brutos = None
 
     if dados_brutos:
-        job = json.loads(dados_brutos)
+        job = dict(dados_brutos)
+        if job.get("result"):
+            try:
+                job["result"] = json.loads(job["result"])
+            except (TypeError, ValueError):
+                pass
+        job.setdefault("completed_at", job.get("updated_at") if job.get("status") == "completed" else None)
     elif job_id in _memoria_local_jobs:
         job = _memoria_local_jobs[job_id]
     else:
