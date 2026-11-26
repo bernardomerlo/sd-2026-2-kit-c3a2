@@ -1,0 +1,22 @@
+# Teste ISOLADO da Etapa 3: docker compose -f docker-compose.etapa3.yml up --build
+services:
+  broker:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  inference:
+    image: python:3.11-slim
+    volumes: ["./tools/mock_inference.py:/app/mock_inference.py:ro"]
+    command: python /app/mock_inference.py
+  worker:
+    build: ./worker
+    environment:
+      BROKER_URL: redis://broker:6379/0
+      INFERENCE_URL: http://inference:8001
+      JOB_TTL_SECONDS: "3600"
+    depends_on:
+      broker: {condition: service_healthy}
